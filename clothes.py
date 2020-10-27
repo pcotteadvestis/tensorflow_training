@@ -33,7 +33,7 @@ parser.add_argument(
     "--shape", type=str, help="The number of nodes for the hidden layer (Default : 28,28)", default=[28, 28],
 )
 parser.add_argument(
-    "--epochs", type=str, help="The number of epochs (Default : 5)", default=5,
+    "--epochs", type=str, help="The number of epochs (Default : 10)", default=10,
 )
 parser.add_argument(
     "--rewrite", action="store_true", help="To recreate the output files",
@@ -41,7 +41,16 @@ parser.add_argument(
 parser.add_argument(
     "--kind", type=str, help="The name of the current iteration process", default="",
 )
+parser.add_argument("--force", action="store_true", help="To refit the model even if it is already saved")
 args = parser.parse_args()
+
+
+class MyCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None:
+            logs = {}
+        if logs.get("accuracy") > 0.9:
+            self.model.stop_training = True
 
 
 def treat_args():
@@ -74,7 +83,7 @@ def create_model(
     metrics=None,
     input_shape_=None,
     kind_="",
-) -> Tuple[tf.keras.models.Model, Union[None, str]]:
+) -> Tuple[tf.keras.models.Model, Union[None, str], bool]:
     if input_shape_ is None:
         input_shape_ = [28, 28]
     if metrics is None:
@@ -118,12 +127,10 @@ def create_model(
     if (
         len(list((model_directory / name_).glob("/*"))) > 0
         and len(list((model_directory / name_).glob(f"/{kind_}*"))) != 0
+        and not args.force
     ):
-        return model_, None
-    return model_, name_
-
-
-units, activations, first_layer, shape, epochs, rewrite, kind = treat_args()
+        return model_, name_, False
+    return model_, name_, True
 
 
 def get_value_kind(kind_):
@@ -135,32 +142,45 @@ def get_value_kind(kind_):
         return len(units) - 1
 
 
-model, name = create_model(
-    units_=units, activations_=activations, first_layer_=first_layer, input_shape_=shape, kind_=kind
-)
-
-if kind == "":
-    model.summary()
-
-
-mnist = tf.keras.datasets.fashion_mnist
-
-(training_images, training_labels), (test_images, test_labels) = mnist.load_data()
-
-training_images = training_images / 255.0
-test_images = test_images / 255.0
-
-if name is not None:
+def fit_model(model_):
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=Path("logs") / name)
-    hist = model.fit(training_images, training_labels, epochs=epochs, callbacks=[tensorboard_callback])
+    callbacks = MyCallback()
+    hist = model_.fit(training_images, training_labels, epochs=epochs, callbacks=[tensorboard_callback, callbacks])
     (model_directory / name).mkdir()
-    model.save_weights((model_directory / name / f"model_{epochs}.ckpt").__fspath__())
+    model_.save_weights((model_directory / name / f"model_{epochs}.ckpt").__fspath__())
+    print(f"WEIGHTS SAVED IN {model_directory / name}")
     if kind != "":
         Path(model_directory / name / f"{kind}_{get_value_kind(kind)}.csv").write(
             data=pd.DataFrame.from_dict(hist.history)
         )
 
 
-model.evaluate(test_images, test_labels)
+if __name__ == "__main__":
 
-classifications = model.predict(test_images)
+    units, activations, first_layer, shape, epochs, rewrite, kind = treat_args()
+
+    model, name, do_fit = create_model(
+        units_=units, activations_=activations, first_layer_=first_layer, input_shape_=shape, kind_=kind
+    )
+
+    mnist = tf.keras.datasets.fashion_mnist
+
+    (training_images, training_labels), (test_images, test_labels) = mnist.load_data()
+
+    training_images = training_images / 255.0
+    test_images = test_images / 255.0
+
+    if do_fit:
+        fit_model(model)
+    else:
+        model.load_weights((model_directory / name / f"model_{epochs}.ckpt").__fspath__())
+
+    res = model.evaluate(test_images, test_labels)
+
+    if kind != "":
+        df = Path(model_directory / name / f"{kind}_{get_value_kind(kind)}.csv").read(index_col=0)
+        df.loc["testing"] = res
+        Path(model_directory / name / f"{kind}_{get_value_kind(kind)}.csv").write(df)
+        print(df)
+
+    # classifications = model.predict(test_images)
