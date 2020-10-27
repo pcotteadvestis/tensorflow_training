@@ -9,21 +9,23 @@ import pandas as pd
 files = {}
 kinds = []
 for dir_ in Path("models").glob("/*"):
-    files[dir_.stem] = list(dir_.glob("/*.csv"))[0]
-    kind = files[dir_.stem].stem.split("_")[0]
-    if kind not in kinds:
-        kinds.append(kind)
+    files[dir_.stem] = list(dir_.glob("/*.csv"))
+    for file_ in list(dir_.glob("/*.csv")):
+        kind = file_.stem.split("_")[0]
+        if kind not in kinds:
+            kinds.append(kind)
 
 accuracies = {}
 for key in files:
-    kind = files[key].stem.split("_")[0]
-    if kind not in accuracies:
-        accuracies[kind] = pd.DataFrame(dtype=float, columns=["Accuracy"])
-    if kind == "nodes":
-        ind = int(files[key].stem.split(kind)[1].split("_")[1])
-    else:
-        ind = files[key].stem.split(kind)[1].split("_")[1]
-    accuracies[kind].loc[ind] = files[key].read(index_col=0)["accuracy"].iloc[-1]
+    for file in files[key]:
+        kind = file.stem.split("_")[0]
+        if kind not in accuracies:
+            accuracies[kind] = pd.DataFrame(dtype=float, columns=["Accuracy"])
+        if kind == "nodes":
+            ind = int(file.stem.split(kind)[1].split("_")[1])
+        else:
+            ind = file.stem.split(kind)[1].split("_")[1]
+        accuracies[kind].loc[ind] = file.read(index_col=0)["accuracy"].iloc[-1]
 
 
 figures = []
