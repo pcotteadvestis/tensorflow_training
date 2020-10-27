@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(
     description="Tensorflow training", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 )
 parser.add_argument(
-    "--units", type=str, help="The number of nodes in each layers (Default : 10,128)", default=[128, 10],
+    "--units", type=str, help="The number of nodes in each layers (Default : 128,10)", default=[128, 10],
 )
 parser.add_argument(
     "--activations",
@@ -41,6 +41,9 @@ parser.add_argument(
 parser.add_argument(
     "--kind", type=str, help="The name of the current iteration process", default="",
 )
+parser.add_argument(
+    "--convolute", type=str, help="The number of nodes in each convolution layers (Default : None)", default=None,
+)
 parser.add_argument("--force", action="store_true", help="To refit the model even if it is already saved")
 args = parser.parse_args()
 
@@ -49,7 +52,7 @@ class MyCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         if logs is None:
             logs = {}
-        if logs.get("accuracy") > 0.9:
+        if logs.get("accuracy") > 0.99:
             self.model.stop_training = True
 
 
@@ -61,6 +64,7 @@ def treat_args():
     epochs_ = args.epochs
     rewrite_ = args.rewrite
     kind_ = args.kind
+    convolute_ = args.convolute
     if isinstance(units_, str):
         units_ = [int(u) for u in units_.split(",")]
     if isinstance(activations_, str):
@@ -71,21 +75,22 @@ def treat_args():
         shape_ = [int(u) for u in shape_.split(",")]
     if isinstance(epochs_, str):
         epochs_ = int(epochs_)
-    return units_, activations_, first_layer_, shape_, epochs_, rewrite_, kind_
+    if isinstance(convolute_, str):
+        convolute_ = [int(c) for c in convolute_.split(",")]
+    return units_, activations_, first_layer_, shape_, epochs_, rewrite_, kind_, convolute_
 
 
 def create_model(
     units_: List[int],
     activations_: List[Callable],
-    first_layer_: keras.layers.Layer = tf.keras.layers.Flatten,
+    first_layer_: keras.layers.Layer,
     optimizer=tf.optimizers.Adam(),
     loss="sparse_categorical_crossentropy",
     metrics=None,
     input_shape_=None,
     kind_="",
+    convolute_: List[int] = None,
 ) -> Tuple[tf.keras.models.Model, Union[None, str], bool]:
-    if input_shape_ is None:
-        input_shape_ = [28, 28]
     if metrics is None:
         metrics = ["accuracy"]
 
@@ -101,9 +106,28 @@ def create_model(
         else:
             raise ValueError("Units and activations must have the same length")
 
-    layers = [first_layer_(input_shape=input_shape_)] + [
-        tf.keras.layers.Dense(units_[i], activation=activations_[i]) for i in range(len(units_))
-    ]
+    if convolute_ is not None:
+        input_shape_.append(1)
+        layers = []
+        for i in range(len(convolute_)):
+            if i == 0:
+                layers.append(
+                    tf.keras.layers.Conv2D(convolute_[i], (3, 3), activation="relu", input_shape=input_shape_)
+                )
+            else:
+                layers.append(
+                    tf.keras.layers.Conv2D(convolute_[i], (3, 3), activation="relu")
+                )
+            layers.append(tf.keras.layers.MaxPooling2D(2, 2))
+        layers.append(first_layer_(input_shape=[input_shape_[0] - 2, input_shape_[1] - 2]))
+        layers += [tf.keras.layers.Dense(units_[i], activation=activations_[i]) for i in range(len(units_))]
+        convoluted = f"_convoluted_" \
+                     f"{str(convolute_).replace('[', '').replace(']', '').replace(' ', '').replace(',', '-')}_"
+    else:
+        convoluted = ""
+        layers = [first_layer_()] + [
+            tf.keras.layers.Dense(units_[i], activation=activations_[i]) for i in range(len(units_))
+        ]
 
     act_names = (
         str([a.__name__ for a in activations_])
@@ -117,7 +141,7 @@ def create_model(
         f"{len(layers)}layers_"
         f"{str(input_shape_).replace('[', '').replace(']', '').replace(' ', '').replace(',', 'x')}_"
         f"{str(units_).replace('[', '').replace(']', '').replace(' ', '').replace(',', '-')}_"
-        f"{act_names}"
+        f"{act_names}{convoluted}"
     )
 
     model_ = tf.keras.models.Sequential(layers)
@@ -148,7 +172,7 @@ def fit_model(model_):
     hist = model_.fit(training_images, training_labels, epochs=epochs, callbacks=[tensorboard_callback, callbacks])
     (model_directory / name).mkdir()
     model_.save_weights((model_directory / name / f"model_{epochs}.ckpt").__fspath__())
-    print(f"WEIGHTS SAVED IN {model_directory / name}")
+    print(f"\nWEIGHTS SAVED IN {model_directory / name}\n")
     if kind != "":
         Path(model_directory / name / f"{kind}_{get_value_kind(kind)}.csv").write(
             data=pd.DataFrame.from_dict(hist.history)
@@ -157,15 +181,29 @@ def fit_model(model_):
 
 if __name__ == "__main__":
 
-    units, activations, first_layer, shape, epochs, rewrite, kind = treat_args()
+    units, activations, first_layer, shape, epochs, rewrite, kind, convolute = treat_args()
+
+    print("\nARGUMENTS:")
+    print(f"- {units}")
+    print(f"- {activations}")
+    print(f"- {first_layer}")
+    print(f"- {shape}")
+    print(f"- {epochs}")
+    print(f"- {rewrite}")
+    print(f"- {kind}")
+    print(f"- {convolute}\n")
 
     model, name, do_fit = create_model(
-        units_=units, activations_=activations, first_layer_=first_layer, input_shape_=shape, kind_=kind
+        units_=units, activations_=activations, first_layer_=first_layer, input_shape_=shape, kind_=kind, convolute_=convolute
     )
 
     mnist = tf.keras.datasets.fashion_mnist
 
     (training_images, training_labels), (test_images, test_labels) = mnist.load_data()
+
+    if convolute is not None:
+        test_images = test_images.reshape(10000, 28, 28, 1)
+        training_images = training_images.reshape(60000, 28, 28, 1)
 
     training_images = training_images / 255.0
     test_images = test_images / 255.0
